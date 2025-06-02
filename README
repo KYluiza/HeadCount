@@ -1,11 +1,11 @@
-# 🚀 Projeto Headcount Cycle
+### 🚀 Projeto Headcount Cycle
 
 **Descrição**  
 Esse repo traz um projeto de headcount que simula todo o ciclo de contratação em empresas: da abertura da vaga, passando pelo cálculo de headcount da equipe, até o fechamento da vaga. Tá tudo rodando via Google Apps Script, integrado à planilha dos gestores, mas sem expor tudo de uma vez — assim cada área consegue autonomia pra mexer no que precisa sem quebrar nada importante. 💪
 
 ---
 
-## 📚 O que tem aqui
+### 📚 O que tem aqui
 
 - **Central de Projeção multi-áreas**: você passa o parâmetro `area` (ex.: `sales`, `cs` etc.) e o script roda o cálculo de headcount e orçamento para aquela área específica.  
 - **Separação de responsabilidades**: cada área tem seus parâmetros de linhas/colunas nas abas (HC Actual, Delta HC Pessoas, Delta HC Budget, Aprovação: Novas Vagas, Budget pós movimentos), evitando copy/paste desnecessário.  
@@ -15,7 +15,7 @@ Esse repo traz um projeto de headcount que simula todo o ciclo de contratação 
 
 ---
 
-## 🗂️ Estrutura do código
+### 🗂️ Estrutura do código
 
 O arquivo principal (`Code.gs` ou similar) traz as funções abaixo:
 
@@ -51,7 +51,7 @@ Cada função roda um pedaço específico do fluxo. A lógica geral é:
 
 ---
 
-## 🔍 Explicando as funções (resumido)
+### 🔍 Explicando as funções (resumido)
 
 ### 1. `function doGet(e)`  
 - **O que faz**: ponto de entrada quando você publica esse script como Web App.  
@@ -209,7 +209,7 @@ Cada função roda um pedaço específico do fluxo. A lógica geral é:
 
 ---
 
-## 🤓 Dicas e observações
+### 🤓 Dicas e observações
 
 - **Autonomia e proteção**: como conversamos, o código não expõe todas as formulas nem ranges diretamente nos Apps Script dos gestores — tudo está parametrizado em `getParametrosDaArea`. Se alguém derrubar uma linha de parâmetro, o script quebra, mas não afeta suas fórmulas críticas.  
 - **Escalabilidade multi-áreas**: quer adicionar outra área (ex.: `cs`)? Basta descomentar a seção `else if (area === "cs")` em `getParametrosDaArea` e ajustar as variáveis de linhas (primeiroCargoRow, últimoCargoRow, etc.). Fácil de estender.  
@@ -218,7 +218,7 @@ Cada função roda um pedaço específico do fluxo. A lógica geral é:
 
 ---
 
-## ✏️ Contribuição
+### ✏️ Contribuição
 
 1. Faça um **fork** desse repositório.  
 2. Crie uma **branch** nova: `git checkout -b minha-area-extra`.  
