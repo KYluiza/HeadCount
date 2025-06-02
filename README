@@ -1,0 +1,229 @@
+# 🚀 Projeto Headcount Cycle
+
+**Descrição**  
+Esse repo traz um projeto de headcount que simula todo o ciclo de contratação em empresas: da abertura da vaga, passando pelo cálculo de headcount da equipe, até o fechamento da vaga. Tá tudo rodando via Google Apps Script, integrado à planilha dos gestores, mas sem expor tudo de uma vez — assim cada área consegue autonomia pra mexer no que precisa sem quebrar nada importante. 💪
+
+---
+
+## 📚 O que tem aqui
+
+- **Central de Projeção multi-áreas**: você passa o parâmetro `area` (ex.: `sales`, `cs` etc.) e o script roda o cálculo de headcount e orçamento para aquela área específica.  
+- **Separação de responsabilidades**: cada área tem seus parâmetros de linhas/colunas nas abas (HC Actual, Delta HC Pessoas, Delta HC Budget, Aprovação: Novas Vagas, Budget pós movimentos), evitando copy/paste desnecessário.  
+- **Proteção de abas**: depois que roda a projeção, as abas de resultados são protegidas pra ninguém alterar manualmente. 🔒  
+- **Controle de orçamento x limite**: antes de abrir novas vagas, o script valida se o orçamento calculado tá dentro dos limites definidos na planilha.  
+- **Abertura automática de vagas**: com base na aba "Aprovação: Novas Vagas", ele insere as novas vagas na aba “Vagas Consolidadas” e marca as colunas L e M na planilha externa “Vagas TBH”.  
+
+---
+
+## 🗂️ Estrutura do código
+
+O arquivo principal (`Code.gs` ou similar) traz as funções abaixo:
+
+1. `doGet(e)`  
+2. `getParametrosDaArea(area)`  
+3. `calcularProjecaoCompleta(area)`  
+4. `limparProjecao(area)`  
+5. `protegerAba(sheet)`  
+6. `calcularBudgetPosMovimentos(area)`  
+7. `abrirVagas(area)`  
+
+Cada função roda um pedaço específico do fluxo. A lógica geral é:
+
+1. **Receber parâmetro `area` via URL** (função `doGet`) → chama `calcularProjecaoCompleta`.  
+2. **Buscar parâmetros de linhas/colunas** (sheet names, ranges) de acordo com a área (função `getParametrosDaArea`).  
+3. **Executar projeção de headcount e orçamento** (função `calcularProjecaoCompleta`):  
+   - Lê dados brutos de HC (salários, data de admissão/saída, cargo, equipe).  
+   - Calcula, mês a mês, quantas pessoas (“HC”) estão ativas por cargo×equipe e por equipe (colunas “Delta HC Pessoas”).  
+   - Soma valores de salário mês a mês para cada cargo×equipe e equipe (colunas “Delta HC Budget”).  
+   - Exibe alertas de confirmação e conclusão pro usuário.  
+4. **Limpar projeção e proteger abas** (função `limparProjecao`):  
+   - Limpa todo o conteúdo gerado nas abas “Delta HC Pessoas”, “Delta HC Budget” e “Budget pós movimentos”.  
+   - Protege as abas pra evitar edição manual.  
+5. **Calcular budget pós-movimentos** (função `calcularBudgetPosMovimentos`):  
+   - Puxa quantidades de novas vagas e salários médios da aba “Aprovação: Novas Vagas”.  
+   - Calcula o cumulativo de vagas por cargo×equipe * salário médio (movCargoEquipo).  
+   - Adiciona ao orçamento base já existente em “Delta HC Budget”.  
+   - Agrupa por equipe, soma ao orçamento base em “Delta HC Budget” e grava em “Budget pós movimentos”.  
+6. **Abrir vagas na planilha externa “Vagas TBH”** (função `abrirVagas`):  
+   - Valida se o budget não estourou os limites.  
+   - Para cada quantidade de vaga aprovada, insere linha nova em “Vagas Consolidadas” com informação de código da vaga, data de solicitação, equipe, cargo, mês de referência e data de fechamento (hoje + 60 dias).  
+   - Marca colunas L/M na planilha “Vagas TBH” (externa) pra those vagas não serem reaproveitadas.  
+
+---
+
+## 🔍 Explicando as funções (resumido)
+
+### 1. `function doGet(e)`  
+- **O que faz**: ponto de entrada quando você publica esse script como Web App.  
+- **Parâmetro**: `e.parameter.area` deve especificar a área (ex.: `?area=sales`).  
+- **Fluxo**:  
+  1. Se não vier `area`, devolve mensagem de erro.  
+  2. Tenta chamar `calcularProjecaoCompleta(area.toLowerCase())`.  
+  3. Retorna texto de sucesso (✅) ou erro (❌) pro cliente.
+
+### 2. `function getParametrosDaArea(area)`  
+- **O que faz**: retorna um _objeto_ com todos os nomes de abas e índices de linhas/colunas específicos pra cada área.  
+- **Pontos-chave**:  
+  - Define variáveis como `primeiroCargoRow`, `ultimoCargoRow`, `primeiroEquipeRow`, `ultimoEquipeRow`.  
+  - Mapeia nome das abas:  
+    - `hcSheet`: aba “HC Actual Pessoas” (base de headcount).  
+    - `deltaPess`: aba “Delta HC Pessoas” (cálculo de contagem).  
+    - `deltaBudg`: aba “Delta HC Budget” (cálculo de salário).  
+    - `aprovSheet`: aba “Aprovação: Novas Vagas”.  
+    - `budgetPMSheet`: aba “Budget pós movimentos”.  
+    - `vagasConsSheet`: aba “Vagas Consolidadas”.  
+    - `TBH_ID`: ID da planilha externa “Vagas TBH”.  
+  - Retorna estrutura JSON-like com propriedades de ranges pra projeções.  
+- **Gambiarra**: caso a área não exista, pode lançar erro (no trecho comentado).
+
+### 3. `function calcularProjecaoCompleta(area)`  
+- **O que faz**: roda todo o cálculo de headcount (contagem e orçamento).  
+- **Detalhes do fluxo**:  
+  1. Obtém parâmetros via `getParametrosDaArea(area)`.  
+  2. Pega referências às abas `HC Actual Pessoas`, `Delta HC Pessoas`, `Delta HC Budget`.  
+  3. Exibe um `ui.alert` (modal) perguntando se o usuário já projetou todas as saídas (saídas = demissões, desligamentos). Se o usuário clicar “Não”, cancela tudo.  
+  4. Lê dados brutos:  
+     - Coluna de salário → transforma texto em número (tira caracteres não numéricos).  
+     - Coluna de data de admissão/saída → converte em `{ y, m }` pra facilitar comparação mês a mês.  
+     - Coluna de cargo e equipe → strings limpas com `.trim()`.  
+  5. Junta cabeçalhos de meses (linha 3, colunas 5 a 28) → converte em `{ y, m }`. Tem `mCount` meses no range.  
+  6. **Projeção por cargo×equipe (contagem)**:  
+     - Percorre cada par cargo×equipe da aba “Delta HC Pessoas” (linhas `deltaStartRowP1` a `deltaEndRowP1`).  
+     - Para cada mês, conta quantos funcionários ativos naquela combinação (admissão ≤ mês e saída > mês).  
+     - Grava matriz de contagem em “Delta HC Pessoas” (colunas E:AB).  
+  7. **Projeção por equipe (contagem)**:  
+     - Mesma lógica, mas apenas por equipe (linhas `deltaTeamsStartP2` por `deltaTeamsCountP2`). Grava no range correspondente.  
+  8. **Projeção por cargo×equipe (salário)**:  
+     - Igual ao contagem, porém soma `salários[j]` ao invés de contar. Grava em “Delta HC Budget”.  
+  9. **Projeção por equipe (salário)**:  
+     - Mesma ideia por equipe, soma salários, grava “Delta HC Budget”.  
+  10. Exibe `ui.alert` de “projeção concluída” e orienta o usuário.  
+
+### 4. `function limparProjecao(area)`  
+- **O que faz**: limpa todo resultado das projeções anteriores.  
+- **Fluxo**:  
+  1. Pega parâmetros com `getParametrosDaArea(area)`.  
+  2. Lê quantos meses há na linha de cabeçalho (exatamente a mesma lógica pra descobrir `mCount`).  
+  3. Usa `.clearContent()` pra apagar:  
+     - Faixa de contagem e salário em “Delta HC Pessoas”.  
+     - Faixa de contagem e salário em “Delta HC Budget”.  
+     - Faixa de budget em “Budget pós movimentos”.  
+  4. Chama `protegerAba(sheet)` nas abas que geram resultado, pra proteger contra edição manual.  
+  5. Exibe alerta de “limpeza concluída e abas protegidas”.  
+
+### 5. `function protegerAba(sheet)`  
+- **O que faz**: protege uma aba inteira da planilha contra edição.  
+- **Detalhes**:  
+  1. Remove proteções antigas (`sheet.getProtections(...)`).  
+  2. Aplica proteção full (`sheet.protect()`) → como “Protegido pelo script”.  
+  3. Remove todos editores (`protection.removeEditors(...)`).  
+  4. Se o domínio puder editar, desabilita (`protection.setDomainEdit(false)`).
+
+### 6. `function calcularBudgetPosMovimentos(area)`  
+- **O que faz**: atualiza a aba “Budget pós movimentos” a partir dos dados de “Aprovação: Novas Vagas”.  
+- **Fluxo**:  
+  1. Obtém parâmetros via `getParametrosDaArea(area)`.  
+  2. Pega referências às abas “Aprovação: Novas Vagas”, “Delta HC Budget” e “Budget pós movimentos”. Se alguma não existir, alerta e sai.  
+  3. Lê cabeçalho de meses (E3:AB3) para determinar `mCount`.  
+  4. Lê:  
+     - Equipe (coluna B), Cargo (coluna C), Salário médio (coluna D) em “Aprovação: Novas Vagas” → converte salários textuais em número.  
+     - Quantidades aprovadas (E35:AB213, ou linhas definidas para área) → matriz `qtdsAprov`.  
+  5. Lê base do “Delta HC Budget” (E35:AB213 e E5:AB19) → `baseDeltaCargoEquipe`, `baseDeltaEquipe`.  
+  6. Gera `movCargoEquipo`: cumulativo de vagas × salário médio para cada linha de cargo×equipe → array `[nCargoRows][mCount]`.  
+  7. Soma `movCargoEquipo` com `baseDeltaCargoEquipe` → gera `updatedBudgetCargoEquipe`. Grava em “Budget pós movimentos” (E35:AB213).  
+  8. Agrupa `movCargoEquipo` por equipe usando `equipesDeltaEquipes` e `equipesAprov_raw`, soma a `baseDeltaEquipe` → `updatedBudgetEquipe`. Grava em E5:AB19 de “Budget pós movimentos”.  
+
+### 7. `function abrirVagas(area)`  
+- **O que faz**: insere novas vagas baseadas na aprovação e atualiza a planilha externa “Vagas TBH”.  
+- **Fluxo**:  
+  1. Pega parâmetros via `getParametrosDaArea(area)`.  
+  2. Valida existência das abas internas (`HC`, `Budget pós movimentos`, `Aprovação: Novas Vagas`, `Vagas Consolidadas`) e externa (“Vagas TBH”). Se faltar, alerta e sai.  
+  3. **Validação de orçamento x limite**:  
+     - Pega valor limite de HC em `HC Actual Pessoas!N4`.  
+     - Lê valores do orçamento atual (E4:AB4).  
+     - Se algum valor ≥ limite, pergunta se quer prosseguir.  
+  4. Prepara variáveis da aba “Aprovação: Novas Vagas”:  
+     - `equipesAprov`, `cargosAprov`, `qtdsAprov` (matriz de quantidades).  
+     - `mesesRef` (cabeçalho de meses, 3ª linha).  
+  5. Prepara dados da planilha externa “Vagas TBH”:  
+     - Lê todos `codesTBH` (código das vagas, coluna B).  
+     - Lê colunas L/M pra saber quais linhas estão livres (sem vaga enviada).  
+     - Função interna `findNextFree()` busca próximo índice livre em L/M.  
+  6. **Loop de inserção de vagas**:  
+     - Pra cada linha de “Aprovação: Novas Vagas” (cargo×equipe) e pra cada mês (colunas E:AB), se `qtd > 0`:  
+       - Pra cada unidade da `qtd`, faz:  
+         1. Calcula `nextRow` em “Vagas Consolidadas” (última linha + 1).  
+         2. Acha `idx` livre em TBH (chama `findNextFree()`). Se não achar, alerta e sai.  
+         3. Preenche “Vagas Consolidadas” nas colunas:  
+            - A: `codigoVaga` (código da TBH).  
+            - B: `dataHoje` (data da solicitação).  
+            - C: `equipe`.  
+            - D: `cargo`.  
+            - E: `mes` (mês de referência).  
+            - F: `dataFech` (hoje + 60 dias).  
+         4. Atualiza arrays `colL[idx] = equipe` e `colM[idx] = cargo` para não reutilizar aquela vaga. E incrementa `nextFreeTBH`.  
+  7. Grava as atualizações de `colL` e `colM` de volta na planilha “Vagas TBH” (linhas 2..n).  
+  8. Exibe alerta de “processamento concluído”.  
+
+---
+
+## ⚙️ Como usar
+
+1. **Publicar como Web App**  
+   - Em “Editor de Script” (Apps Script), clique em **Publicar > Implantar como aplicativo da Web**.  
+   - Defina “Executar o app como” → seu usuário.  
+   - “Quem tem acesso” → **Qualquer um, mesmo anônimo** (ou restrito ao domínio, conforme a necessidade).  
+   - Copie a URL de implantação, que será algo como:  
+     ```
+     https://script.google.com/macros/s/AKfycbx…/exec
+     ```  
+   - Para rodar projeção de uma área (ex.: sales), acesse no navegador:  
+     ```
+     https://script.google.com/macros/s/…/exec?area=sales
+     ```
+   - A resposta será um texto simples:  
+     - `✅ Projeção realizada para a área sales`  
+     - Ou `❌ Erro ao executar projeção: ...`
+
+2. **Rodar manual via menu**  
+   - Ao abrir a planilha, um menu “🧮 Gestão” aparece (funcão `onOpen`).  
+   - Clique em **🧮 Gestão > ✨ Projeção inicial Sales** para rodar apenas a projeção de budget pós movimentos (função `calcularBudgetPosMovimentos('sales')`).  
+   - Outro menu pode ser criado pra rodar projeto completo ou limpar projeção, conforme desejar.
+
+3. **Configurar abas e ranges**  
+   - Garanta que as abas tenham exatamente os nomes definidos em `getParametrosDaArea`, caso contrário o script não vai achar e vai quebrar.  
+   - Alinhe as colunas:  
+     - **HC Actual Pessoas**: Col A = salário, Col C = data de admissão (admission date), Col E = cargo, Col G = equipe, Col J = data de saída (exit date).  
+     - **Delta HC Pessoas & Delta HC Budget**: meses em E3:AB3, equipes e cargos nos ranges definidos (linhas 35–213, equipes 5–19 para Sales).  
+     - **Aprovação: Novas Vagas**: colunas B/C/D para equipe/cargo/salário médio a partir da linha 35, meses em E3:AB3 também.  
+     - **Budget pós movimentos**: planilha que recebe o resultado final do budget (E5:AB19 para equipes, E35:AB213 para cargo×equipe).  
+     - **Vagas Consolidadas**: planilha interna que recebe código da vaga, data, equipe, cargo, mês e data de fechamento.  
+     - **Vagas TBH** (planilha externa): Coluna B = código da vaga, Col L/M = equipe e cargo marcados quando a vaga for usada.
+
+4. **Permissões**  
+   - O script precisa de acesso a:  
+     - Planilha atual (o container).  
+     - Planilha externa “Vagas TBH” (via `openById`).  
+     - Mensagens UI (alertas e confirmações).  
+   - Quando publicar/autorizar, permita leitura e escrita nas planilhas.
+
+---
+
+## 🤓 Dicas e observações
+
+- **Autonomia e proteção**: como conversamos, o código não expõe todas as formulas nem ranges diretamente nos Apps Script dos gestores — tudo está parametrizado em `getParametrosDaArea`. Se alguém derrubar uma linha de parâmetro, o script quebra, mas não afeta suas fórmulas críticas.  
+- **Escalabilidade multi-áreas**: quer adicionar outra área (ex.: `cs`)? Basta descomentar a seção `else if (area === "cs")` em `getParametrosDaArea` e ajustar as variáveis de linhas (primeiroCargoRow, últimoCargoRow, etc.). Fácil de estender.  
+- **Casos de erro**: o script já avisa via `ui.alert` se faltar alguma aba ou se o orçamento estourou o limite (você escolhe prosseguir ou abortar).  
+- **Proteção de abas**: a função `protegerAba` bloqueia edição manual — se precisar “desproteger” manualmente, vá em “Proteção de planilha” nas configurações da planilha e remova a proteção ou execute um script que remova proteções (cuidado!).  
+
+---
+
+## ✏️ Contribuição
+
+1. Faça um **fork** desse repositório.  
+2. Crie uma **branch** nova: `git checkout -b minha-area-extra`.  
+3. Implemente suas alterações (ex.: adicionando nova área, ajustando ranges).  
+4. **Commit** e envie pra sua branch:  
+   ```bash
+   git commit -m "feat: adiciona área CS"
+   git push origin minha-area-extra
