@@ -1,0 +1,48 @@
+function onOpen() {
+  const ui = SpreadsheetApp.getUi();
+  
+  // Menu principal “🧮 Gestão”
+  ui.createMenu('🧮 Gestão')
+    .addItem('✨ Projeção inicial Sales',         'executarProjecaoSales')
+    .addItem('✨ Projeção pós movimentos Sales',  'calcularBudgetPosMovimentos')
+    .addItem('✔️ Fechar Contratação Sales',       'abrirVagas')
+    .addSeparator()
+    .addItem('🧼 Limpar Projeção Sales',          'limparProjecaoSales')
+    .addToUi();
+}
+
+function executarProjecaoSales() {
+  try {
+    Gesto.calcularProjecaoCompleta('sales');
+    SpreadsheetApp.getUi().alert('✅ Projeção inicial Sales finalizada!');
+  } catch (err) {
+    SpreadsheetApp.getUi().alert(`❌ Deu ruim ao projetar Sales:\n${err.message}`);
+  }
+}
+
+function calcularBudgetPosMovimentos() {
+  try {
+    Gesto.calcularBudgetPosMovimentos('sales'); // notar que passa 'sales' como parâmetro
+    SpreadsheetApp.getUi().alert('✅ Cálculo do Budget pós movimentos Sales realizado!');
+  } catch (err) {
+    SpreadsheetApp.getUi().alert(`❌ Erro ao Calcular Budget pós movimentos Sales:\n${err.message}`);
+  }
+}
+
+function abrirVagas() {
+  try {
+    Gesto.abrirVagas('sales');
+    SpreadsheetApp.getUi().alert('✅ Fechar Contratação Sales realizado!');
+  } catch (err) {
+    SpreadsheetApp.getUi().alert(`❌ Erro ao fechar contratação Sales:\n${err.message}`);
+  }
+}
+
+function limparProjecaoSales() {
+  try {
+    Gesto.limparProjecao('sales');
+    SpreadsheetApp.getUi().alert('✅ Projeção Sales limpa e protegida!');
+  } catch(err) {
+    SpreadsheetApp.getUi().alert(`❌ Erro ao limpar projeção Sales:\n${err.message}`);
+  }
+}
