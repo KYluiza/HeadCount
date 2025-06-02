@@ -1,0 +1,341 @@
+/**
+ * Gera debug detalhado para:
+ *  - Contagem de headcount em "HC Actual Pessoas", mês a mês
+ *  - Valores correspondentes em "Delta HC Pessoas" e "Delta HC Budget"
+ *  - Valores em "Budget pós movimentos"
+ *  - Quantidade de vagas solicitadas (cruas) em "Aprovação: Novas Vagas"
+ *  - Vagas acumulativas (acrescenta a partir do mês de solicitação e continua até o fim)
+ *  - Cálculo de "Pessoas pós movimento" = HC Contagem + Vagas acumulativas
+ *  - Cálculo de "MovVagas" = Vagas acumulativas * Salário médio
+ *  - Cálculo de "Budget Calculado" = Delta HC Budget + MovVagas
+ *  - Descritivo das variáveis principais usadas no cálculo
+ *
+ * O script criará (ou recriará) uma aba chamada "Debug Budget" com as colunas:
+ *   A: Mês
+ *   B: HC Contagem
+ *   C: Delta HC Pessoas
+ *   D: Delta HC Budget
+ *   E: Budget pós movimentos
+ *   F: Vagas Solicitadas (cruas, só daquele mês)
+ *   G: Vagas Acumulativas (todas as vagas até aquele mês)
+ *   H: Pessoas pós movimento (HC Contagem + Vagas Acumulativas)
+ *   I: MovVagas (Vagas Acumulativas * Salário Médio)
+ *   J: Budget Calculado (Delta HC Budget + MovVagas)
+ *
+ * Para usar:
+ * - Vá em Extensões → Apps Script, cole este código e salve.
+ * - No menu Executar, selecione `debugBudgetCalculations` e autorize quando solicitado.
+ * - Depois abra a aba “Debug Budget” gerada e verifique Ver → Registros de execução para logs.
+ */
+function debugBudgetCalculations() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ui = SpreadsheetApp.getUi();
+  Logger.clear();
+  Logger.log('▶️ Início do debugBudgetCalculations');
+
+  // ==== 1) PARÂMETROS FIXOS PARA DEBUG ====
+  const equipeDebug = '37751156002';
+  const cargoDebug  = '33992291002';
+  
+  // ==== 2) VERIFICAÇÃO DE ABAS ====
+  const shHC       = ss.getSheetByName('HC Actual Pessoas');
+  const shDeltaP   = ss.getSheetByName('Delta HC Pessoas');
+  const shDeltaB   = ss.getSheetByName('Delta HC Budget');
+  const shBudgetPM = ss.getSheetByName('Budget pós movimentos');
+  const shAprov    = ss.getSheetByName('Aprovação: Novas Vagas');
+  const faltando   = [];
+  if (!shHC)       faltando.push('"HC Actual Pessoas"');
+  if (!shDeltaP)   faltando.push('"Delta HC Pessoas"');
+  if (!shDeltaB)   faltando.push('"Delta HC Budget"');
+  if (!shBudgetPM) faltando.push('"Budget pós movimentos"');
+  if (!shAprov)    faltando.push('"Aprovação: Novas Vagas"');
+  if (faltando.length) {
+    ui.alert('❌ Abas faltando para debug: ' + faltando.join(', '));
+    Logger.log('❌ Abortando: faltam abas: ' + faltando.join(', '));
+    return;
+  }
+  Logger.log('✅ Todas as abas presentes para debug.');
+
+  // ==== 3) LER DADOS DE "HC Actual Pessoas" ====
+  const hcStartRow  = 2;
+  const colEquipeHC = 7;  // G
+  const colCargoHC  = 5;  // E
+  const colAdmHC    = 3;  // C
+  const colExitHC   = 10; // J
+  const hcLastRow   = shHC.getLastRow();
+  if (hcLastRow < hcStartRow) {
+    ui.alert('⚠️ "HC Actual Pessoas" não tem dados suficientes (última linha < ' + hcStartRow + ').');
+    Logger.log('❌ Abortando: hcLastRow (' + hcLastRow + ') < hcStartRow (' + hcStartRow + ').');
+    return;
+  }
+  const nHC = hcLastRow - hcStartRow + 1;
+  Logger.log('hcStartRow = ' + hcStartRow + ', hcLastRow = ' + hcLastRow + ', nHC = ' + nHC);
+
+  const arrEquipesHC = shHC
+    .getRange(hcStartRow, colEquipeHC, nHC, 1)
+    .getValues().flat().map(String).map(s => s.trim());
+  const arrCargosHC  = shHC
+    .getRange(hcStartRow, colCargoHC,  nHC, 1)
+    .getValues().flat().map(String).map(s => s.trim());
+  const arrAdmRaw    = shHC.getRange(hcStartRow, colAdmHC,  nHC, 1).getValues().flat();
+  const arrExitRaw   = shHC.getRange(hcStartRow, colExitHC, nHC, 1).getValues().flat();
+
+  function toYearMonth(val) {
+    if (!val) return null;
+    const d = (val instanceof Date) ? val : new Date(val);
+    if (isNaN(d)) return null;
+    return { y: d.getFullYear(), m: d.getMonth() };
+  }
+  const arrAdmYM  = arrAdmRaw.map(toYearMonth);
+  const arrExitYM = arrExitRaw.map(toYearMonth);
+  Logger.log('✅ Dados de HC lidos e arrays criados.');
+
+  // ==== 4) LER CABEÇALHOS DE MÊS EM "Delta HC Pessoas" ====
+  const monthHeaderRow = 3;
+  const monthStartCol  = 5;  // E
+  const monthEndCol    = 28; // AB
+  const rawMonths      = shDeltaP
+    .getRange(monthHeaderRow, monthStartCol, 1, monthEndCol - monthStartCol + 1)
+    .getValues()[0];
+  const monthYM        = rawMonths.map(toYearMonth);
+  const mCount         = monthYM.length;
+  Logger.log('monthHeaderRow = ' + monthHeaderRow + ', monthStartCol = ' + monthStartCol +
+             ', monthEndCol = ' + monthEndCol + ', mCount = ' + mCount);
+
+  const monthLabels = rawMonths.map(v => {
+    if (v instanceof Date) {
+      return Utilities.formatDate(v, ss.getSpreadsheetTimeZone(), 'MMM/yyyy');
+    } else if (v !== '' && v != null) {
+      return String(v);
+    } else {
+      return '–';
+    }
+  });
+  Logger.log('monthLabels = [' + monthLabels.join(', ') + ']');
+
+  // ==== 5) CALCULAR CONTAGEM HC ATIVOS PARA equipeDebug + cargoDebug ====
+  const hcCounts = new Array(mCount).fill(0);
+  for (let k = 0; k < mCount; k++) {
+    const hm = monthYM[k];
+    if (!hm) {
+      hcCounts[k] = 0;
+      continue;
+    }
+    const key = hm.y * 12 + hm.m;
+    let countActive = 0;
+    for (let i = 0; i < nHC; i++) {
+      if (arrEquipesHC[i] !== equipeDebug || arrCargosHC[i] !== cargoDebug) continue;
+      const admKey  = arrAdmYM[i]  ? (arrAdmYM[i].y * 12 + arrAdmYM[i].m) : -Infinity;
+      const exitKey = arrExitYM[i] ? (arrExitYM[i].y * 12 + arrExitYM[i].m) : Infinity;
+      if (admKey <= key && exitKey > key) countActive++;
+    }
+    hcCounts[k] = countActive;
+  }
+  Logger.log('hcCounts (por mês) = [' + hcCounts.join(', ') + ']');
+
+  // ==== 6) LOCALIZAR LINHA EM "Delta HC Pessoas" PARA ESSE PAR ====
+  const deltaStartRow = 35;
+  const deltaEndRow   = 213;
+  const nDelta        = deltaEndRow - deltaStartRow + 1;
+  if (deltaEndRow < deltaStartRow) {
+    ui.alert('⚠️ “Delta HC Pessoas” não tem estrutura esperada (linhas insuficientes).');
+    Logger.log('❌ Abortando: deltaEndRow (' + deltaEndRow + ') < deltaStartRow (' + deltaStartRow + ').');
+    return;
+  }
+  Logger.log('deltaStartRow = ' + deltaStartRow + ', deltaEndRow = ' + deltaEndRow + ', nDelta = ' + nDelta);
+
+  const arrEquipesDelta = shDeltaP
+    .getRange(deltaStartRow, 2, nDelta, 1)
+    .getValues().flat().map(String).map(s => s.trim());
+  const arrCargosDelta  = shDeltaP
+    .getRange(deltaStartRow, 3, nDelta, 1)
+    .getValues().flat().map(String).map(s => s.trim());
+
+  let idxDeltaRow = -1;
+  for (let i = 0; i < nDelta; i++) {
+    if (arrEquipesDelta[i] === equipeDebug && arrCargosDelta[i] === cargoDebug) {
+      idxDeltaRow = i;
+      break;
+    }
+  }
+  if (idxDeltaRow < 0) {
+    ui.alert('⚠️ Não encontrei equipe ' + equipeDebug + ' e cargo ' + cargoDebug +
+             ' em “Delta HC Pessoas”.');
+    Logger.log('❌ idxDeltaRow = -1, combinação não encontrada.');
+    return;
+  }
+  Logger.log('idxDeltaRow (0-based) = ' + idxDeltaRow +
+             ' → Linha real = ' + (deltaStartRow + idxDeltaRow));
+
+  const deltaPValues = shDeltaP
+    .getRange(deltaStartRow + idxDeltaRow, monthStartCol, 1, mCount)
+    .getValues()[0];
+  const deltaBValues = shDeltaB
+    .getRange(deltaStartRow + idxDeltaRow, monthStartCol, 1, mCount)
+    .getValues()[0];
+  Logger.log('deltaPValues = [' + deltaPValues.join(', ') + ']');
+  Logger.log('deltaBValues = [' + deltaBValues.join(', ') + ']');
+
+  // ==== 7) LER “Budget pós movimentos” PARA ESSE PAR ====
+  const budgetPMValues = shBudgetPM
+    .getRange(deltaStartRow + idxDeltaRow, monthStartCol, 1, mCount)
+    .getValues()[0];
+  Logger.log('budgetPMValues = [' + budgetPMValues.join(', ') + ']');
+
+  // ==== 8) LER “Aprovação: Novas Vagas” E SOMAR VAGAS SOLICITADAS ====
+  const aprovStartRow = 35;
+  const aprovEndRow   = 213;
+  const nAprovRows    = aprovEndRow - aprovStartRow + 1;
+  if (aprovEndRow < aprovStartRow) {
+    ui.alert('⚠️ “Aprovação: Novas Vagas” não tem estrutura esperada (linhas insuficientes).');
+    Logger.log('❌ Abortando: aprovEndRow (' + aprovEndRow + ') < aprovStartRow (' + aprovStartRow + ').');
+    return;
+  }
+  Logger.log('aprovStartRow = ' + aprovStartRow + ', aprovEndRow = ' + aprovEndRow +
+             ', nAprovRows = ' + nAprovRows);
+
+  const arrEquipesAprov = shAprov
+    .getRange(aprovStartRow, 2, nAprovRows, 1)
+    .getValues().flat().map(String).map(s => s.trim());
+  const arrCargosAprov  = shAprov
+    .getRange(aprovStartRow, 3, nAprovRows, 1)
+    .getValues().flat().map(String).map(s => s.trim());
+  const arrSalariosAprovRaw = shAprov
+    .getRange(aprovStartRow, 4, nAprovRows, 1)
+    .getValues().flat();
+  // Converte salário médio para número
+  const arrSalariosAprov = arrSalariosAprovRaw.map(v => {
+    if (v === '' || v == null) return 0;
+    if (typeof v === 'number') return v;
+    const p = parseFloat(String(v).replace(/\D+/g, ''));
+    return isNaN(p) ? 0 : p;
+  });
+  const arrVagasQuant   = shAprov
+    .getRange(aprovStartRow, monthStartCol, nAprovRows, mCount)
+    .getValues();
+
+  // Encontrar índice em Aprov que case com equipeDebug+cargoDebug
+  let idxAprovRow = -1;
+  for (let i = 0; i < nAprovRows; i++) {
+    if (arrEquipesAprov[i] === equipeDebug && arrCargosAprov[i] === cargoDebug) {
+      idxAprovRow = i;
+      break;
+    }
+  }
+  let salaryMedio = 0;
+  if (idxAprovRow >= 0) {
+    salaryMedio = arrSalariosAprov[idxAprovRow];
+    Logger.log('salaryMedio encontrado = ' + salaryMedio +
+               ' (linha Aprov: ' + (aprovStartRow + idxAprovRow) + ')');
+  } else {
+    Logger.log('⚠️ Nenhuma linha em Aprov achou equipe+cargo para pegar salaryMedio, usaremos 0.');
+  }
+
+  // Soma vagas solicitadas (cruas) por mês para equipeDebug+cargoDebug
+  const vagasRaw = new Array(mCount).fill(0);
+  for (let i = 0; i < nAprovRows; i++) {
+    if (arrEquipesAprov[i] === equipeDebug && arrCargosAprov[i] === cargoDebug) {
+      for (let k = 0; k < mCount; k++) {
+        vagasRaw[k] += Number(arrVagasQuant[i][k]) || 0;
+      }
+    }
+  }
+  Logger.log('vagasRaw (cruas, por mês) = [' + vagasRaw.join(', ') + ']');
+
+  // ==== 9) GERAR VETOR ACUMULATIVO DE VAGAS ====
+  const vagasCumul = [];
+  let somaCorrente = 0;
+  for (let k = 0; k < mCount; k++) {
+    somaCorrente += vagasRaw[k];
+    vagasCumul.push(somaCorrente);
+  }
+  Logger.log('vagasCumul (acumuladas) = [' + vagasCumul.join(', ') + ']');
+
+  // ==== 10) CÁLCULOS ADICIONAIS ====
+  // Pessoas pós movimento = HC Contagem + Vagas cumulativas
+  const pessoasPosMov = hcCounts.map((hc, idx) => hc + vagasCumul[idx]);
+  Logger.log('pessoasPosMov = [' + pessoasPosMov.join(', ') + ']');
+
+  // MovVagas (orçamento incremental de vagas) = vagasCumul * salaryMedio
+  const movVagas = vagasCumul.map(v => v * salaryMedio);
+  Logger.log('movVagas = [' + movVagas.join(', ') + ']');
+
+  // Budget Calculado = Delta HC Budget + MovVagas
+  const budgetCalculado = deltaBValues.map((b, idx) => Number(b) + movVagas[idx]);
+  Logger.log('budgetCalculado = [' + budgetCalculado.join(', ') + ']');
+
+  // ==== 11) CRIAR (OU SUBSTITUIR) A ABA “Debug Budget” ====
+  const debugSheetName = 'Debug Budget';
+  let shDebug = ss.getSheetByName(debugSheetName);
+  if (shDebug) {
+    ss.deleteSheet(shDebug);
+    Logger.log('Aba “Debug Budget” existente removida.');
+  }
+  shDebug = ss.insertSheet(debugSheetName);
+  Logger.log('Aba “Debug Budget” criada.');
+
+  // Cabeçalho com todas as colunas novas
+  const header = [
+    'Mês',
+    'HC Contagem',
+    'Delta HC Pessoas',
+    'Delta HC Budget',
+    'Budget pós movimentos',
+    'Vagas Solicitadas',
+    'Vagas Acumulativas',
+    'Pessoas pós movimento',
+    'MovVagas',
+    'Budget Calculado'
+  ];
+  shDebug.getRange(1, 1, 1, header.length).setValues([header]);
+  Logger.log('Cabeçalho escrito em “Debug Budget”.');
+
+  // Preenchendo mês a mês
+  const output = [];
+  for (let k = 0; k < mCount; k++) {
+    output.push([
+      monthLabels[k],
+      hcCounts[k],
+      deltaPValues[k],
+      deltaBValues[k],
+      budgetPMValues[k],
+      vagasRaw[k],
+      vagasCumul[k],
+      pessoasPosMov[k],
+      movVagas[k],
+      budgetCalculado[k]
+    ]);
+  }
+  shDebug.getRange(2, 1, output.length, header.length).setValues(output);
+  shDebug.getRange(1, 1, 1, header.length).setFontWeight('bold');
+  shDebug.autoResizeColumns(1, header.length);
+  Logger.log('Dados preenchidos em “Debug Budget”.');
+
+  // ==== 12) LOG FINAL DE VARIÁVEIS PRINCIPAIS ====
+  Logger.log('--- Variáveis de Debug ---');
+  Logger.log('hcStartRow        = ' + hcStartRow);
+  Logger.log('nHC               = ' + nHC);
+  Logger.log('colEquipeHC       = ' + colEquipeHC);
+  Logger.log('colCargoHC        = ' + colCargoHC);
+  Logger.log('colAdmHC          = ' + colAdmHC);
+  Logger.log('colExitHC         = ' + colExitHC);
+  Logger.log('monthHeaderRow    = ' + monthHeaderRow);
+  Logger.log('monthStartCol     = ' + monthStartCol);
+  Logger.log('monthEndCol       = ' + monthEndCol);
+  Logger.log('mCount            = ' + mCount);
+  Logger.log('deltaStartRow     = ' + deltaStartRow);
+  Logger.log('nDelta            = ' + nDelta);
+  Logger.log('aprovStartRow     = ' + aprovStartRow);
+  Logger.log('nAprovRows        = ' + nAprovRows);
+  Logger.log('salaryMedio       = ' + salaryMedio);
+
+  const primeiroEquipeRow = 5;
+  const ultimoEquipeRow   = 19;
+  const nEquipeRows       = ultimoEquipeRow - primeiroEquipeRow + 1;
+  Logger.log('primeiroEquipeRow = ' + primeiroEquipeRow);
+  Logger.log('ultimoEquipeRow   = ' + ultimoEquipeRow);
+  Logger.log('nEquipeRows       = ' + nEquipeRows);
+
+  ui.alert('📊 Debug concluído! Confira a aba “Debug Budget” e Ver → Registros de execução.');
+}
+
