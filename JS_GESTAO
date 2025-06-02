@@ -34,7 +34,7 @@ function getParametrosDaArea(area) {
       aprovSheet:     "Aprovação: Novas Vagas",
       budgetPMSheet:  "Budget pós movimentos",
       vagasConsSheet: "Vagas Consolidadas",
-      TBH_ID:         "1WQXHzPYOrk4FN6jTgV3AtNyYFFmt5MPPJwMqz1hhX20",
+      TBH_ID:         "ID",
 
       // Projeção headcount (“Delta HC Pessoas”):
       deltaStartRowP1:   primeiroCargoRow,
@@ -77,7 +77,7 @@ function getParametrosDaArea(area) {
       aprovSheet:     "Aprovação: Novas Vagas",
       budgetPMSheet:  "Budget pós movimentos",
       vagasConsSheet: "Vagas Consolidadas",
-      TBH_ID:         "1WQXHzPYOrk4FN6jTgV3AtNyYFFmt5MPPJwMqz1hhX20",
+      TBH_ID:         "ID",
 
       // Projeção headcount (“Delta HC Pessoas”):
       deltaStartRowP1:   primeiroCargoRow,
