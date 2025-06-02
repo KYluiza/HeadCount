@@ -1,0 +1,748 @@
+/**
+ * Central de Projeção para múltiplas áreas (Sales, CS, etc.)
+ * Roda o código principal com parâmetros customizados para cada área
+ */
+function doGet(e) {
+  const area = e.parameter.area;
+  if (!area) return ContentService.createTextOutput('❌ Parâmetro "area" ausente');
+  
+  try {
+    calcularProjecaoCompleta(area.toLowerCase());
+    return ContentService.createTextOutput(`✅ Projeção realizada para a área ${area}`);
+  } catch (err) {
+    return ContentService.createTextOutput(`❌ Erro ao executar projeção: ${err.message}`);
+  }
+}
+
+/**
+ * Retorna as variáveis da planilha para a área solicitada
+ */
+function getParametrosDaArea(area) {
+
+  if (area === "sales") {
+    // Defina uma única constante para o início/fim de cargo×equipe e de equipe
+    const primeiroCargoRow  = 35;
+    const ultimoCargoRow    = 213;
+    const primeiroEquipeRow = 5;
+    const ultimoEquipeRow   = 19; // (primeiroEquipeRow + deltaTeamsCountP2 - 1)
+
+    return {
+      // Abas:
+      hcSheet:        "HC Actual Pessoas",
+      deltaPess:      "Delta HC Pessoas",
+      deltaBudg:      "Delta HC Budget",
+      aprovSheet:     "Aprovação: Novas Vagas",
+      budgetPMSheet:  "Budget pós movimentos",
+      vagasConsSheet: "Vagas Consolidadas",
+      TBH_ID:         "1WQXHzPYOrk4FN6jTgV3AtNyYFFmt5MPPJwMqz1hhX20",
+
+      // Projeção headcount (“Delta HC Pessoas”):
+      deltaStartRowP1:   primeiroCargoRow,
+      deltaEndRowP1:     ultimoCargoRow,
+      deltaTeamsStartP2: primeiroEquipeRow,
+      deltaTeamsCountP2: ultimoEquipeRow - primeiroEquipeRow + 1, // 19 - 5 + 1 = 15
+
+      // Projeção salário (“Delta HC Budget”):
+      deltaStartRowB1:   primeiroCargoRow,
+      deltaEndRowB1:     ultimoCargoRow,
+      deltaTeamsStartB2: primeiroEquipeRow,
+      deltaTeamsCountB2: ultimoEquipeRow - primeiroEquipeRow + 1,
+
+      // Projeção Pós Budget (“Budget pós movimentos”):
+      deltaStartRowBp1:   primeiroCargoRow,
+      deltaEndRowBp1:     ultimoCargoRow,
+      deltaTeamsStartBp2: primeiroEquipeRow,
+      deltaTeamsCountBp2: ultimoEquipeRow - primeiroEquipeRow + 1,
+
+      // “Aprovação: Novas Vagas” (mesmos índices de cargo×equipe):
+      aprovStartRow:     primeiroCargoRow,
+      aprovEndRow:       ultimoCargoRow
+    };
+  }
+
+
+ /* 
+  } else if (area === "cs") {
+    // Defina uma única constante para o início/fim de cargo×equipe e de equipe
+    const primeiroCargoRow  = 35;
+    const ultimoCargoRow    = 197;
+    const primeiroEquipeRow = 5;
+    const ultimoEquipeRow   = 17; // (primeiroEquipeRow + deltaTeamsCountP2 - 1)
+
+    return {
+      // Abas:
+      hcSheet:        "HC Actual Pessoas",
+      deltaPess:      "Delta HC Pessoas",
+      deltaBudg:      "Delta HC Budget",
+      aprovSheet:     "Aprovação: Novas Vagas",
+      budgetPMSheet:  "Budget pós movimentos",
+      vagasConsSheet: "Vagas Consolidadas",
+      TBH_ID:         "1WQXHzPYOrk4FN6jTgV3AtNyYFFmt5MPPJwMqz1hhX20",
+
+      // Projeção headcount (“Delta HC Pessoas”):
+      deltaStartRowP1:   primeiroCargoRow,
+      deltaEndRowP1:     ultimoCargoRow,
+      deltaTeamsStartP2: primeiroEquipeRow,
+      deltaTeamsCountP2: ultimoEquipeRow - primeiroEquipeRow + 1, 
+      // Projeção salário (“Delta HC Budget”):
+      deltaStartRowB1:   primeiroCargoRow,
+      deltaEndRowB1:     ultimoCargoRow,
+      deltaTeamsStartB2: primeiroEquipeRow,
+      deltaTeamsCountB2: ultimoEquipeRow - primeiroEquipeRow + 1,
+
+      // Projeção Pós Budget (“Budget pós movimentos”):
+      deltaStartRowBp1:   primeiroCargoRow,
+      deltaEndRowBp1:     ultimoCargoRow,
+      deltaTeamsStartBp2: primeiroEquipeRow,
+      deltaTeamsCountBp2: ultimoEquipeRow - primeiroEquipeRow + 1,
+
+      // “Aprovação: Novas Vagas” (mesmos índices de cargo×equipe):
+      aprovStartRow:     primeiroCargoRow,
+      aprovEndRow:       ultimoCargoRow
+  } else {
+    throw new Error(`Área "${area}" não reconhecida.`);
+  }*/
+}
+
+/**
+ * Chamada principal, que usa os parâmetros da área e executa as projeções
+ */
+function calcularProjecaoCompleta(area) {
+  const p = getParametrosDaArea(area);
+
+  const ss       = SpreadsheetApp.getActiveSpreadsheet();
+  const shHC     = ss.getSheetByName(p.hcSheet);
+  const shDeltaP = ss.getSheetByName(p.deltaPess);
+  const shDeltaB = ss.getSheetByName(p.deltaBudg);
+  const ui       = SpreadsheetApp.getUi();
+
+  if (!shHC || !shDeltaP || !shDeltaB) {
+    throw new Error('Aba(s) não encontrada(s) para ' + area);
+  }
+
+  // 1) Validação inicial com o usuário
+  const confirmacao = ui.alert(
+    `🛡️ Validação de Saídas (${area.toUpperCase()})`,
+    `Você já projetou todas as saídas da área ${area.toUpperCase()}?\n` +
+    'Clique em "Sim" para continuar ou "Não" para cancelar.',
+    ui.ButtonSet.YES_NO
+  );
+  if (confirmacao !== ui.Button.YES) {
+    ui.alert('⚠️ Projeção cancelada pelo usuário.');
+    return;
+  }
+
+  // 2) LEITURA GERAL DO HC (Headcount + Salário)
+  const hcStartRow   = 2;
+  const hcLastRow    = shHC.getLastRow();
+  const nHC          = hcLastRow - hcStartRow + 1;
+
+  const colSalario   = 1;
+  const colAdm       = 3;
+  const colCargo     = 5;
+  const colEquipe    = 7;
+  const colExit      = 10;
+
+  const salariosRaw  = shHC.getRange(hcStartRow, colSalario, nHC, 1).getValues().flat();
+  const admVals      = shHC.getRange(hcStartRow, colAdm,     nHC, 1).getValues().flat();
+  const exitVals     = shHC.getRange(hcStartRow, colExit,    nHC, 1).getValues().flat();
+  const cargosHC     = shHC.getRange(hcStartRow, colCargo,   nHC, 1)
+                          .getValues().flat().map(String).map(s => s.trim());
+  const equipesHC    = shHC.getRange(hcStartRow, colEquipe,  nHC, 1)
+                          .getValues().flat().map(String).map(s => s.trim());
+
+  const salarios = salariosRaw.map(v => {
+    if (v === '' || v == null) return 0;
+    if (typeof v === 'number') return v;
+    const parsed = parseFloat(String(v).replace(/\D+/g, ''));
+    return isNaN(parsed) ? 0 : parsed;
+  });
+
+  function toYearMonth(val) {
+    if (!val) return null;
+    const d = val instanceof Date ? val : new Date(val);
+    if (isNaN(d)) return null;
+    return { y: d.getFullYear(), m: d.getMonth() };
+  }
+  const admYM  = admVals.map(toYearMonth);
+  const exitYM = exitVals.map(toYearMonth);
+
+  // 3) CABEÇALHOS DE MESES (em ambas abas)
+  const monthHeaderRow = 3;
+  const monthStartCol  = 5;
+  const monthEndCol    = 28;
+  const rawMonths      = shDeltaP
+    .getRange(monthHeaderRow, monthStartCol, 1, monthEndCol - monthStartCol + 1)
+    .getValues()[0];
+  const monthYM        = rawMonths.map(toYearMonth);
+  const mCount         = monthYM.length;
+
+  // 4) PROJEÇÃO POR CARGO×EQUIPE (CONTAGEM) → "Delta HC Pessoas"
+  const deltaStartRowP1  = p.deltaStartRowP1;
+  const deltaEndRowP1    = p.deltaEndRowP1;
+  const deltaEquipeColP1 = 2;
+  const deltaCargoColP1  = 3;
+  const nDeltaP1         = deltaEndRowP1 - deltaStartRowP1 + 1;
+
+  const equipesD_P1 = shDeltaP
+    .getRange(deltaStartRowP1, deltaEquipeColP1, nDeltaP1, 1)
+    .getValues().flat().map(String).map(s => s.trim());
+  const cargosD_P1  = shDeltaP
+    .getRange(deltaStartRowP1, deltaCargoColP1, nDeltaP1, 1)
+    .getValues().flat().map(String).map(s => s.trim());
+
+  const resultsCount1 = [];
+  for (let i = 0; i < nDeltaP1; i++) {
+    const eqTarget = equipesD_P1[i];
+    const caTarget = cargosD_P1[i];
+    const counts   = [];
+    for (let k = 0; k < mCount; k++) {
+      const hm = monthYM[k];
+      if (!hm) { counts.push(0); continue; }
+      const key = hm.y * 12 + hm.m;
+      let activeCount = 0;
+      for (let j = 0; j < nHC; j++) {
+        if (equipesHC[j] !== eqTarget) continue;
+        if (cargosHC[j]  !== caTarget) continue;
+        const aKey = admYM[j]  ? (admYM[j].y * 12 + admYM[j].m) : -Infinity;
+        const eKey = exitYM[j] ? (exitYM[j].y * 12 + exitYM[j].m) : Infinity;
+        if (aKey <= key && eKey > key) activeCount++;
+      }
+      counts.push(activeCount);
+    }
+    resultsCount1.push(counts);
+  }
+  shDeltaP
+    .getRange(deltaStartRowP1, monthStartCol, nDeltaP1, mCount)
+    .setValues(resultsCount1);
+
+  // 5) PROJEÇÃO POR EQUIPE (CONTAGEM) → "Delta HC Pessoas"
+  const deltaTeamsStartP2  = p.deltaTeamsStartP2;
+  const deltaTeamsCountP2  = p.deltaTeamsCountP2;
+  const deltaEquipeColP2   = 2;
+
+  const equipesD_P2 = shDeltaP
+    .getRange(deltaTeamsStartP2, deltaEquipeColP2, deltaTeamsCountP2, 1)
+    .getValues().flat().map(String).map(s => s.trim());
+
+  const resultsCount2 = [];
+  equipesD_P2.forEach(eqTarget => {
+    const counts = [];
+    for (let k = 0; k < mCount; k++) {
+      const hm = monthYM[k];
+      if (!hm) { counts.push(0); continue; }
+      const key = hm.y * 12 + hm.m;
+      let activeCount = 0;
+      for (let j = 0; j < nHC; j++) {
+        if (equipesHC[j] !== eqTarget) continue;
+        const aKey = admYM[j]  ? (admYM[j].y * 12 + admYM[j].m) : -Infinity;
+        const eKey = exitYM[j] ? (exitYM[j].y * 12 + exitYM[j].m) : Infinity;
+        if (aKey <= key && eKey > key) activeCount++;
+      }
+      counts.push(activeCount);
+    }
+    resultsCount2.push(counts);
+  });
+  shDeltaP
+    .getRange(deltaTeamsStartP2, monthStartCol, deltaTeamsCountP2, mCount)
+    .setValues(resultsCount2);
+
+  // 6) PROJEÇÃO POR CARGO×EQUIPE (SALÁRIO) → "Delta HC Budget"
+  const deltaStartRowB1   = p.deltaStartRowB1;
+  const deltaEndRowB1     = p.deltaEndRowB1;
+  const deltaEquipeColB1  = 2;
+  const deltaCargoColB1   = 3;
+  const nDeltaB1          = deltaEndRowB1 - deltaStartRowB1 + 1;
+
+  const equipesD_B1 = shDeltaB
+    .getRange(deltaStartRowB1, deltaEquipeColB1, nDeltaB1, 1)
+    .getValues().flat().map(String).map(s => s.trim());
+  const cargosD_B1  = shDeltaB
+    .getRange(deltaStartRowB1, deltaCargoColB1, nDeltaB1, 1)
+    .getValues().flat().map(String).map(s => s.trim());
+
+  const resultsBudget1 = [];
+  for (let i = 0; i < nDeltaB1; i++) {
+    const eqTarget = equipesD_B1[i];
+    const caTarget = cargosD_B1[i];
+    const sums     = [];
+    for (let k = 0; k < mCount; k++) {
+      const hm = monthYM[k];
+      if (!hm) { sums.push(0); continue; }
+      const key = hm.y * 12 + hm.m;
+      let salarySum = 0;
+      for (let j = 0; j < nHC; j++) {
+        if (equipesHC[j] !== eqTarget) continue;
+        if (cargosHC[j]  !== caTarget) continue;
+        const aKey = admYM[j]  ? (admYM[j].y * 12 + admYM[j].m) : -Infinity;
+        const eKey = exitYM[j] ? (exitYM[j].y * 12 + exitYM[j].m) : Infinity;
+        if (aKey <= key && eKey > key) salarySum += salarios[j];
+      }
+      sums.push(salarySum);
+    }
+    resultsBudget1.push(sums);
+  }
+  shDeltaB
+    .getRange(deltaStartRowB1, monthStartCol, nDeltaB1, mCount)
+    .setValues(resultsBudget1);
+
+  // 7) PROJEÇÃO POR EQUIPE (SALÁRIO) → "Delta HC Budget"
+  const deltaTeamsStartB2  = p.deltaTeamsStartB2;
+  const deltaTeamsCountB2  = p.deltaTeamsCountB2;
+  const deltaEquipeColB2   = 2;
+
+  const equipesD_B2 = shDeltaB
+    .getRange(deltaTeamsStartB2, deltaEquipeColB2, deltaTeamsCountB2, 1)
+    .getValues().flat().map(String).map(s => s.trim());
+
+  const resultsBudget2 = [];
+  equipesD_B2.forEach(eqTarget => {
+    const sums = [];
+    for (let k = 0; k < mCount; k++) {
+      const hm = monthYM[k];
+      if (!hm) { sums.push(0); continue; }
+      const key = hm.y * 12 + hm.m;
+      let salarySum = 0;
+      for (let j = 0; j < nHC; j++) {
+        if (equipesHC[j] !== eqTarget) continue;
+        const aKey = admYM[j]  ? (admYM[j].y * 12 + admYM[j].m) : -Infinity;
+        const eKey = exitYM[j] ? (exitYM[j].y * 12 + exitYM[j].m) : Infinity;
+        if (aKey <= key && eKey > key) salarySum += salarios[j];
+      }
+      sums.push(salarySum);
+    }
+    resultsBudget2.push(sums);
+  });
+  shDeltaB
+    .getRange(deltaTeamsStartB2, monthStartCol, deltaTeamsCountB2, mCount)
+    .setValues(resultsBudget2);
+
+  ui.alert(`🎉✅ Projeção ${area.toUpperCase()} concluída! Confira as abas "Delta HC Pessoas" e "Delta HC Budget"`);
+}
+function limparProjecao(area) {
+  // 1) Pega parâmetros específicos da área (nomes de abas, posições de ranges etc.)
+  const p = getParametrosDaArea(area.toLowerCase());
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const shDeltaP        = ss.getSheetByName(p.deltaPess);
+  const shDeltaB        = ss.getSheetByName(p.deltaBudg);
+  const shBudgetPMSheet = ss.getSheetByName(p.budgetPMSheet);
+
+  if (!shDeltaP || !shDeltaB || !shBudgetPMSheet) {
+    throw new Error(`Aba(s) não encontrada(s) para "${area}"`);
+  }
+
+  // 2) Descobre quantos meses estão no cabeçalho pra limpar a faixa correta
+  const monthHeaderRow = 3;
+  const monthStartCol  = 5;
+  const monthEndCol    = 28;
+  const rawMonths = shDeltaP
+    .getRange(monthHeaderRow, monthStartCol, 1, monthEndCol - monthStartCol + 1)
+    .getValues()[0];
+  const mCount = rawMonths.length;
+
+  // 3) APAGA PROJEÇÃO de CONTAGEM em “Delta HC Pessoas”
+  const linhasP1 = p.deltaEndRowP1 - p.deltaStartRowP1 + 1;
+  shDeltaP
+    .getRange(p.deltaStartRowP1, monthStartCol, linhasP1, mCount)
+    .clearContent();
+  // 3.1) APAGA PROJEÇÃO de EQUIPES (contagem) em “Delta HC Pessoas”
+  shDeltaP
+    .getRange(p.deltaTeamsStartP2, monthStartCol, p.deltaTeamsCountP2, mCount)
+    .clearContent();
+
+  // 4) APAGA PROJEÇÃO de SALÁRIO em “Delta HC Budget”
+  const linhasB1 = p.deltaEndRowB1 - p.deltaStartRowB1 + 1;
+  shDeltaB
+    .getRange(p.deltaStartRowB1, monthStartCol, linhasB1, mCount)
+    .clearContent();
+  // 4.1) APAGA PROJEÇÃO de EQUIPES (salário) em “Delta HC Budget”
+  shDeltaB
+    .getRange(p.deltaTeamsStartB2, monthStartCol, p.deltaTeamsCountB2, mCount)
+    .clearContent();
+
+  // 5) APAGA PROJEÇÃO de BUDGET em “Budget pós movimentos”
+  const linhasBp1 = p.deltaEndRowBp1 - p.deltaStartRowBp1 + 1;
+  shBudgetPMSheet
+    .getRange(p.deltaStartRowBp1, monthStartCol, linhasBp1, mCount)
+    .clearContent();
+  // 5.1) APAGA PROJEÇÃO de EQUIPES (budget) em “Budget pós movimentos”
+  shBudgetPMSheet
+    .getRange(p.deltaTeamsStartBp2, monthStartCol, p.deltaTeamsCountBp2, mCount)
+    .clearContent();
+
+  // 6) PROTEGE PÁGINAS para bloquear edição manual
+  protegerAba(shDeltaP);
+  protegerAba(shDeltaB);
+  protegerAba(shBudgetPMSheet);
+
+  // 7) Mensagem de confirmação
+  SpreadsheetApp.getUi().alert(`🧹 Projeção de ${area.toUpperCase()} limpa e abas protegidas!`);
+}
+
+
+/**
+ * Função auxiliar para proteger totalmente uma aba, removendo
+ * qualquer proteção antiga e impedindo edições manuais.
+ */
+function protegerAba(sheet) {
+  // 1) Remove qualquer proteção de folha que já exista (caso rodado antes)
+  const protecs = sheet.getProtections(SpreadsheetApp.ProtectionType.SHEET);
+  protecs.forEach(p => p.remove());
+
+  // 2) Protege a folha inteira (sem exceção de ranges)
+  const protection = sheet.protect().setDescription('Protegido pelo script');
+
+  // 3) Garante que ninguém, exceto o proprietário do script, possa editar:
+  //    - Remove todos os editores cadastrados
+  protection.removeEditors(protection.getEditors());
+
+  //    - Se estiver liberado para o domínio, bloqueia também
+  if (protection.canDomainEdit()) {
+    protection.setDomainEdit(false);
+  }
+}
+
+
+
+
+function calcularBudgetPosMovimentos(area) {
+  const p = getParametrosDaArea(area.toLowerCase());
+  const ss         = SpreadsheetApp.getActiveSpreadsheet();
+  const shAprov    = ss.getSheetByName('Aprovação: Novas Vagas');
+  const shDeltaHCB = ss.getSheetByName('Delta HC Budget');
+  const shBudgetPM = ss.getSheetByName('Budget pós movimentos');
+  const ui         = SpreadsheetApp.getUi();
+
+  if (!shAprov || !shDeltaHCB || !shBudgetPM) {
+    ui.alert(
+      '❌ Abas necessárias não encontradas:\n' +
+      '📑 "Aprovação: Novas Vagas"\n' +
+      '📑 "Delta HC Budget"\n' +
+      '📑 "Budget pós movimentos"'
+    );
+    return;
+  }
+
+  // 1) DEFINIÇÕES GLOBAIS
+  const monthHeaderRow    = 3;
+  const monthStartCol     = 5;   // Coluna E
+  const monthEndCol       = 28;  // Coluna AB
+
+  // Use os parâmetros corretos de p:
+  const primeiroCargoRow  = p.deltaStartRowBp1;    // 35
+  const ultimoCargoRow    = p.deltaEndRowBp1;      // 213
+  const nCargoRows        = ultimoCargoRow - primeiroCargoRow + 1;
+
+  const primeiroEquipeRow = p.deltaTeamsStartBp2;  // 5
+  const nEquipeRows       = p.deltaTeamsCountBp2;  // 15
+
+  // Descobre quantos meses existem em E3:AB3
+  const rawMonths = shDeltaHCB
+    .getRange(monthHeaderRow, monthStartCol, 1, monthEndCol - monthStartCol + 1)
+    .getValues()[0];
+  const mCount = rawMonths.length;
+
+  // 2) LER DADOS DE "Aprovação: Novas Vagas"
+  const eqColAprov    = 2; // Coluna B
+  const cargoColAprov = 3; // Coluna C
+  const salColAprov   = 4; // Coluna D
+
+  // B35:B213 → códigos de equipe
+  const equipesAprov_raw = shAprov
+    .getRange(primeiroCargoRow, eqColAprov, nCargoRows, 1)
+    .getValues().flat().map(String).map(s => s.trim());
+
+  // C35:C213 → cargos
+  const cargosAprov_raw = shAprov
+    .getRange(primeiroCargoRow, cargoColAprov, nCargoRows, 1)
+    .getValues().flat().map(String).map(s => s.trim());
+
+  // D35:D213 → salário médio
+  const salariosAprov_raw = shAprov
+    .getRange(primeiroCargoRow, salColAprov, nCargoRows, 1)
+    .getValues().flat();
+
+  const salariosAprov = salariosAprov_raw.map(v => {
+    if (v === '' || v == null) return 0;
+    if (typeof v === 'number') return v;
+    const parsed = parseFloat(String(v).replace(/\D+/g, ''));
+    return isNaN(parsed) ? 0 : parsed;
+  });
+
+  // E35:AB213 → matriz de quantidades
+  const qtdsAprov = shAprov
+    .getRange(primeiroCargoRow, monthStartCol, nCargoRows, mCount)
+    .getValues();
+
+  // 3) LÊ “Delta HC Budget” COMO BASE
+  const baseDeltaCargoEquipe = shDeltaHCB
+    .getRange(primeiroCargoRow, monthStartCol, nCargoRows, mCount)
+    .getValues();
+
+  const baseDeltaEquipe = shDeltaHCB
+    .getRange(primeiroEquipeRow, monthStartCol, nEquipeRows, mCount)
+    .getValues();
+
+  // B5:B19 de “Delta HC Budget” → lista de códigos de equipe
+  const equipesDeltaEquipes = shDeltaHCB
+    .getRange(primeiroEquipeRow, eqColAprov, nEquipeRows, 1)
+    .getValues().flat().map(String).map(s => s.trim());
+
+  // 4) CALCULA “movCargoEquipo” PARA CADA CARGO×EQUIPE
+  const movCargoEquipo = []; // [nCargoRows][mCount]
+  for (let i = 0; i < nCargoRows; i++) {
+    const rowRaw = qtdsAprov[i].map(v => Number(v) || 0);
+    let running = 0;
+    const cumulRow = [];
+    for (let k = 0; k < mCount; k++) {
+      running += rowRaw[k];
+      cumulRow.push(running);
+    }
+    const movRow = cumulRow.map(v => v * salariosAprov[i]);
+    movCargoEquipo.push(movRow);
+  }
+
+  // 5) COMBINA movCargoEquipo COM baseDeltaCargoEquipe
+  const updatedBudgetCargoEquipe = [];
+  for (let i = 0; i < nCargoRows; i++) {
+    const rowBase = baseDeltaCargoEquipe[i];
+    const rowMov  = movCargoEquipo[i];
+    const rowSum  = [];
+    for (let k = 0; k < mCount; k++) {
+      rowSum.push(Number(rowBase[k]) + Number(rowMov[k]));
+    }
+    updatedBudgetCargoEquipe.push(rowSum);
+  }
+
+  // Grava em E35:AB213 de "Budget pós movimentos"
+  shBudgetPM
+    .getRange(primeiroCargoRow, monthStartCol, nCargoRows, mCount)
+    .setValues(updatedBudgetCargoEquipe);
+
+  // 6) AGRUPA movCargoEquipo POR Equipe e soma a baseDeltaEquipe
+  const movPorEquipe = [];
+  for (let f = 0; f < nEquipeRows; f++) {
+    movPorEquipe.push(new Array(mCount).fill(0));
+  }
+  for (let i = 0; i < nCargoRows; i++) {
+    const eqCode = equipesAprov_raw[i];
+    const f = equipesDeltaEquipes.indexOf(eqCode);
+    if (f < 0) continue;
+    for (let k = 0; k < mCount; k++) {
+      movPorEquipe[f][k] += movCargoEquipo[i][k];
+    }
+  }
+
+  const updatedBudgetEquipe = [];
+  for (let f = 0; f < nEquipeRows; f++) {
+    const rowBaseEq = baseDeltaEquipe[f];
+    const rowMovEq  = movPorEquipe[f];
+    const rowSumEq  = [];
+    for (let k = 0; k < mCount; k++) {
+      rowSumEq.push(Number(rowBaseEq[k]) + Number(rowMovEq[k]));
+    }
+    updatedBudgetEquipe.push(rowSumEq);
+  }
+
+  // Grava em E5:AB19 de "Budget pós movimentos"
+  shBudgetPM
+    .getRange(primeiroEquipeRow, monthStartCol, nEquipeRows, mCount)
+    .setValues(updatedBudgetEquipe);
+}
+
+
+
+/**
+ * abrirVagas(area)
+ *  – Usa as definições de getParametrosDaArea(area) para:
+ *      1) Validar orçamento x limite em “Budget pós movimentos”
+ *      2) Ler blocos de “Aprovação: Novas Vagas” (linhas definidas)
+ *      3) Escrever novas vagas em “Vagas Consolidadas”
+ *      4) Marcar colunas L e M em “Vagas TBH” (planilha externa)
+ */
+function abrirVagas(area) {
+  // Força o parâmetro para minúsculas, garantindo que bate com "sales"
+  const p  = getParametrosDaArea(area.toLowerCase());
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ui = SpreadsheetApp.getUi();
+
+  // Se p for nulo, significa que a área não existe em getParametrosDaArea
+  if (!p) {
+    ui.alert(
+      `❌ Parâmetro de área inválido:\n` +
+      `  • Você passou "${area}".\n` +
+      `  • Use "sales" (tudo minúsculo) ou outra área válida.`
+    );
+    return;
+  }
+
+  // Abas internas
+  const shHC       = ss.getSheetByName(p.hcSheet);
+  const shBudget   = ss.getSheetByName(p.budgetPMSheet);
+  const shAprov    = ss.getSheetByName(p.aprovSheet);
+  const shCons     = ss.getSheetByName(p.vagasConsSheet);
+
+  // Planilha externa “Vagas TBH”
+  const otherSS  = SpreadsheetApp.openById(p.TBH_ID);
+  const shTBH    = otherSS.getSheetByName('Vagas TBH');
+
+  // Se qualquer aba não existir, avisa e retorna
+  if (!shHC || !shBudget || !shAprov || !shCons || !shTBH) {
+    ui.alert(
+      '❌ Abas necessárias não encontradas!\n' +
+      `📑 "${p.hcSheet}"\n` +
+      `📑 "${p.budgetPMSheet}"\n` +
+      `📑 "${p.aprovSheet}"\n` +
+      `📑 "${p.vagasConsSheet}"\n` +
+      `📑 "Vagas TBH" (planilha externa)`
+    );
+    return;
+  }
+
+  // ================================
+  // 1) VALIDAÇÃO ORÇAMENTO x LIMITE
+  // ================================
+  const limiteHC = Number(shHC.getRange('N4').getValue()) || 0;
+  const valsRow4 = shBudget.getRange('E4:AB4').getValues()[0];
+  let excede = false;
+  for (let v of valsRow4) {
+    if (Number(v) >= limiteHC) {
+      excede = true;
+      break;
+    }
+  }
+  if (excede) {
+    const resp = ui.alert(
+      '⚠️ Orçamento excede limite!',
+      'Algum valor em E4:AB4 (“Budget pós movimentos”) é ≥ limite em N4 (“HC Actual Pessoas”).\n' +
+      'Clique em "Sim" para continuar mesmo assim, ou "Não" para voltar.',
+      ui.ButtonSet.YES_NO
+    );
+    if (resp !== ui.Button.YES) {
+      ui.alert('🔄 Ação cancelada. Ajuste a projeção antes de abrir vagas.');
+      return;
+    }
+    ui.alert('⚠️ Prosseguindo com orçamento excedido. Solicitação será enviada à controladoria.');
+  }
+
+  // ===========================================
+  // 2) VARIÁVEIS PARA "Aprovação: Novas Vagas"
+  // ===========================================
+  const primeiroRowAprov    = p.aprovStartRow;
+  const ultimoRowAprov      = p.aprovEndRow;
+  const nRowsAprov          = ultimoRowAprov - primeiroRowAprov + 1;
+  const monthHeaderRowAprov = 3;
+  const monthStartColAprov  = 5;   // Coluna E
+  const monthEndColAprov    = 28;  // Coluna AB
+  const mCount = monthEndColAprov - monthStartColAprov + 1;
+
+  const eqColAprov    = 2; // Coluna B (Equipe)
+  const cargoColAprov = 3; // Coluna C (Cargo)
+
+  const equipesAprov = shAprov
+    .getRange(primeiroRowAprov, eqColAprov, nRowsAprov, 1)
+    .getValues().flat().map(String).map(s => s.trim());
+  const cargosAprov = shAprov
+    .getRange(primeiroRowAprov, cargoColAprov, nRowsAprov, 1)
+    .getValues().flat().map(String).map(s => s.trim());
+  const qtdsAprov = shAprov
+    .getRange(primeiroRowAprov, monthStartColAprov, nRowsAprov, mCount)
+    .getValues();
+  const mesesRef = shAprov
+    .getRange(monthHeaderRowAprov, monthStartColAprov, 1, mCount)
+    .getValues()[0];
+
+  // ======================================
+  // 3) DATAS DE SOLICITAÇÃO e FECHAMENTO
+  // ======================================
+  const hoje     = new Date();
+  const dataHoje = new Date(hoje.getFullYear(), hoje.getMonth(), hoje.getDate());
+  const dataFech = new Date(dataHoje);
+  dataFech.setDate(dataFech.getDate() + 60);
+
+  // ==========================================
+  // 4) PRECARREGA E PREPARA DADOS DE "Vagas TBH"
+  // ==========================================
+  const lastRowTBH = shTBH.getLastRow();
+  const nTBH       = Math.max(0, lastRowTBH - 1); // linhas 2..lastRowTBH
+
+  const codesTBH = nTBH > 0
+    ? shTBH.getRange(2, 2, nTBH, 1).getValues().flat()   // Coluna B
+    : [];
+  const colL     = nTBH > 0
+    ? shTBH.getRange(2, 12, nTBH, 1).getValues().flat()  // Coluna L
+    : [];
+  const colM     = nTBH > 0
+    ? shTBH.getRange(2, 13, nTBH, 1).getValues().flat()  // Coluna M
+    : [];
+
+  let nextFreeTBH = 0;
+  function findNextFree() {
+    while (nextFreeTBH < nTBH) {
+      if (
+        (colL[nextFreeTBH] === '' || colL[nextFreeTBH] === null) &&
+        (colM[nextFreeTBH] === '' || colM[nextFreeTBH] === null)
+      ) {
+        return nextFreeTBH;
+      }
+      nextFreeTBH++;
+    }
+    return -1;
+  }
+
+  // ========================================
+  // 5) INSERE VAGAS EM "Vagas Consolidadas"
+  // ========================================
+  for (let i = 0; i < nRowsAprov; i++) {
+    const equipe = equipesAprov[i];
+    const cargo  = cargosAprov[i];
+
+    for (let k = 0; k < mCount; k++) {
+      const qtd = Number(qtdsAprov[i][k]) || 0;
+      if (qtd <= 0) continue;
+
+      const mes = mesesRef[k];
+
+      for (let x = 0; x < qtd; x++) {
+        // 5.1) Linha nova em “Vagas Consolidadas”
+        const nextRow = shCons.getLastRow() + 1;
+
+        // 5.2) Acha 1ª vaga livre em TBH (col L e M vazias)
+        const idx = findNextFree();
+        if (idx < 0) {
+          ui.alert('⚠️ Nenhuma linha em "Vagas TBH" livre (colunas L e M preenchidas).');
+          return;
+        }
+        const targetRowTBH = idx + 2; // converte índice 0-based → número de linha no TBH
+        const codigoVaga   = codesTBH[idx];
+
+        // 5.3) Preenche “Vagas Consolidadas”
+        shCons.getRange(nextRow, 1).setValue(codigoVaga);   // Col A ← Código da vaga
+        shCons.getRange(nextRow, 2).setValue(dataHoje);     // Col B ← Data da solicitação
+        shCons.getRange(nextRow, 3).setValue(equipe);       // Col C ← Equipe
+        shCons.getRange(nextRow, 4).setValue(cargo);        // Col D ← Cargo
+        shCons.getRange(nextRow, 5).setValue(mes);          // Col E ← Mês de referência
+        shCons.getRange(nextRow, 6).setValue(dataFech);     // Col F ← 60 dias após hoje
+
+        // 5.4) Marca TBH (col L e M) em memória para não reutilizar
+        colL[idx] = equipe;
+        colM[idx] = cargo;
+        nextFreeTBH++;
+      }
+    }
+  }
+
+  // ===============================
+  // 6) GRAVA ATUALIZAÇÕES EM "Vagas TBH"
+  // ===============================
+  if (nTBH > 0) {
+    const rangeL = shTBH.getRange(2, 12, nTBH, 1);
+    const rangeM = shTBH.getRange(2, 13, nTBH, 1);
+    const outL   = colL.map(v => [v]);
+    const outM   = colM.map(v => [v]);
+    rangeL.setValues(outL);
+    rangeM.setValues(outM);
+  }
+
+  ui.alert('✅ Processamento concluído!\nNovas vagas adicionadas em "Vagas Consolidadas".');
+}
